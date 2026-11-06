@@ -2,6 +2,14 @@ import Foundation
 import Testing
 @testable import SpaceDockCore
 struct SummonConfigurationTests {
+    @Test func menuBarVisibilityDefaultsToVisibleForOldConfigurations() throws {
+        let data = Data(#"{"schemaVersion":1,"bindings":[],"holdMilliseconds":200,"excludedBundleIDs":[]}"#.utf8)
+        var config = try JSONDecoder().decode(Configuration.self, from: data)
+        #expect(config.menuBarIconVisible)
+        config.showMenuBarIcon = false
+        let restored = try JSONDecoder().decode(Configuration.self, from: JSONEncoder().encode(config))
+        #expect(!restored.menuBarIconVisible)
+    }
     @Test func legacyBindingDoesNotEnableMovingWindows() throws {
         let data = Data(#"{"id":"871A779D-7B50-4B74-AD4E-7D71657C7023","name":"微信","bundleIdentifier":"com.tencent.xinWeChat","path":"/Applications/WeChat.app","keyCode":13,"autoHide":true}"#.utf8)
         let binding = try JSONDecoder().decode(AppBinding.self, from: data)

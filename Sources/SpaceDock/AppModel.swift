@@ -122,6 +122,9 @@ final class AppModel: ObservableObject {
         }
     }
     func setDelay(_ value: Double) { var next = config; next.holdMilliseconds = Int(value); _ = save(next) }
+    func setMenuBarIconVisible(_ visible: Bool) {
+        var next = config; next.showMenuBarIcon = visible; _ = save(next)
+    }
     func addExcluded(_ url: URL) {
         guard let bundle = Bundle(url: url)?.bundleIdentifier else { error = "无法读取应用标识。"; return }
         var next = config; if !next.excludedBundleIDs.contains(bundle) { next.excludedBundleIDs.append(bundle); _ = save(next) }

@@ -16,6 +16,8 @@ public struct Configuration: Codable, Equatable {
     public var bindings: [AppBinding] = []
     public var holdMilliseconds = 200
     public var excludedBundleIDs: [String] = []
+    public var showMenuBarIcon: Bool? = nil
+    public var menuBarIconVisible: Bool { showMenuBarIcon != false }
     public init() {}
     public func validate() throws {
         guard schemaVersion == 1 else { throw ConfigError.invalid("配置版本不受支持，原文件已保留。") }
