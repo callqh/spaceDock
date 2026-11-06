@@ -24,7 +24,7 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 9) { icon("space", .blue, size: 29); Text("SpaceDock").font(.system(size: 13, weight: .semibold)) }.padding(.bottom, 22).padding(.horizontal, 8)
+                HStack(spacing: 9) { Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 32, height: 32); Text("SpaceDock").font(.system(size: 13, weight: .semibold)) }.padding(.bottom, 22).padding(.horizontal, 8)
                 ForEach(Page.allCases) { item in
                     Button { page = item } label: {
                         HStack(spacing: 8) { icon(item.symbol, item.tint, size: 23); Text(item.rawValue).font(.system(size: 13)); Spacer() }.padding(.horizontal, 8).padding(.vertical, 7).contentShape(Rectangle())
@@ -33,28 +33,27 @@ struct SettingsView: View {
                 Spacer()
                 HStack(spacing: 6) { Circle().fill(model.effectiveEnabled ? Color.green : Color.orange).frame(width: 6, height: 6); Text(model.status).font(.system(size: 12)) }
                 Button(model.paused ? "恢复快捷键" : "暂停快捷键") { model.paused.toggle() }.buttonStyle(.link).font(.system(size: 12)).disabled(!model.trusted || model.configBlocked)
-            }.padding(.horizontal, 12).padding(.vertical, 20).frame(width: 184).background(MaterialSidebar())
+            }.padding(.horizontal, 12).padding(.bottom, 20).padding(.top, 48).frame(width: 184).background(MaterialSidebar())
             Divider()
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        HStack(spacing: 14) { icon(page.symbol, page.tint, size: 48); VStack(alignment: .leading, spacing: 4) { Text(page.rawValue).font(.system(size: 20, weight: .semibold)); Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary) } }
+                        VStack(alignment: .leading, spacing: 6) { Text(page.rawValue).font(.system(size: 22, weight: .semibold)); Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary) }
                         if model.configBlocked { configurationWarning }
-                        if !model.trusted { permissionBanner }
+                        if !model.trusted && page == .bindings { permissionBanner }
                         if let error = model.error {
                             HStack(alignment: .top) { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange); Text(error).font(.system(size: 12)).textSelection(.enabled); Spacer(); Button { model.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭错误提示") }.padding(12).background(Color.orange.opacity(0.09)).cornerRadius(9)
                         }
                         switch page { case .bindings: bindingsPage; case .preferences: preferencesPage }
-                    }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
+                    }.padding(28).padding(.top, 20).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Divider()
-                HStack { Text("配置仅保存在本机"); Spacer(); Text(model.notice ?? "SpaceDock 1.0") }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
+                if let notice = model.notice { Text(notice).font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 28).padding(.bottom, 12) }
             }.background(Color(nsColor: .windowBackgroundColor))
-        }.frame(minWidth: 760, minHeight: 560)
+        }.ignoresSafeArea(.container, edges: .top).frame(minWidth: 760, minHeight: 560)
         .sheet(isPresented: $showEditor, onDismiss: { model.recording = false }) { BindingEditor(model: model, original: editor).onAppear { model.recording = true } }
         .alert("备份并重置配置？", isPresented: $resetConfirm) { Button("取消", role: .cancel) {}; Button("备份并重置", role: .destructive) { model.resetConfiguration() } } message: { Text("会保留原文件副本，然后建立空配置。") }
     }
-    var subtitle: String { switch page { case .bindings: return "设置用于打开和切换应用的快捷键。"; case .preferences: return "调到适合你的打字节奏。" } }
+    var subtitle: String { switch page { case .bindings: return "按住空格，再按一个键。再次按下可隐藏应用。"; case .preferences: return "让 SpaceDock 适合你的使用习惯。" } }
     private var configurationWarning: some View {
         group { VStack(alignment: .leading, spacing: 10) { Text("配置文件需要修复").fontWeight(.semibold); Text("为保护已有配置，暂时停用快捷键和设置保存。").font(.caption); HStack { Button("查看配置文件") { NSWorkspace.shared.activateFileViewerSelecting([model.store.url]) }; Button("备份并重置…") { resetConfirm = true } } } }
     }
@@ -67,38 +66,43 @@ struct SettingsView: View {
     }
     private var bindingsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            group { HStack(spacing: 18) { HStack(spacing: 6) { keycap("space"); Text("+").foregroundStyle(.secondary); keycap(model.config.bindings.first.flatMap { KeyMap.labels[$0.keyCode] } ?? "W") }; VStack(alignment: .leading, spacing: 3) { Text("按住空格，再按一个键").font(.system(size: 12, weight: .medium)); Text("再按一次，隐藏当前应用。").font(.system(size: 11)).foregroundStyle(.secondary) } } }
             VStack(spacing: 0) {
                 HStack { Text("我的应用").fontWeight(.semibold); Text("\(model.config.bindings.count)").foregroundStyle(.secondary); Spacer(); Button { editor = nil; showEditor = true } label: { Label("添加应用", systemImage: "plus") }.buttonStyle(.borderedProminent).disabled(model.configBlocked) }.padding(14)
                 Divider().padding(.horizontal, 14)
                 if model.config.bindings.isEmpty {
-                    VStack(spacing: 10) { Image(systemName: "space").font(.system(size: 30)).foregroundStyle(.secondary); Text("给常用应用留一个键"); Text("添加后，按住空格就能随时叫出它。").font(.caption).foregroundStyle(.secondary) }.padding(28).frame(maxWidth: .infinity)
+                    VStack(spacing: 10) { Image(systemName: "space").font(.system(size: 30)).foregroundStyle(.secondary); Text("给常用应用留一个键"); Text("添加后，按住空格就能随时叫出它。").font(.caption).foregroundStyle(.secondary) }.padding(28).padding(.top, 20).frame(maxWidth: .infinity)
                 } else {
-                    HStack { Text("应用"); Spacer(); Text("快捷键").frame(width: 112, alignment: .leading); Text("在当前桌面唤起").frame(width: 118) }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.top, 10)
+                    HStack(spacing: 10) { Text("应用"); Spacer(); Text("快捷键").frame(width: 112, alignment: .leading); Text("当前桌面").frame(width: 72); Color.clear.frame(width: 28, height: 1) }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.top, 10)
                     ForEach(model.config.bindings) { binding in
                         HStack(spacing: 10) {
                             Image(nsImage: NSWorkspace.shared.icon(forFile: binding.path)).resizable().frame(width: 30, height: 30)
                             Text(binding.name).lineLimit(2); Spacer(minLength: 5)
                             HStack(spacing: 5) { keycap("space"); Text("+").font(.caption).foregroundStyle(.secondary); keycap(KeyMap.labels[binding.keyCode] ?? "?") }.frame(width: 112, alignment: .leading)
-                            Toggle("在当前桌面唤起\(binding.name)", isOn: Binding(get: { binding.summonHere == true }, set: { model.setSummonHere(binding, $0) })).labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(model.preparingAssignment || model.configBlocked)
-                            Menu { Button("编辑快捷键…") { editor = binding; showEditor = true }; Button("移除绑定", role: .destructive) { model.remove(binding) } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 22).accessibilityLabel("\(binding.name)更多操作")
+                            Toggle("在当前桌面唤起\(binding.name)", isOn: Binding(get: { binding.summonHere == true }, set: { model.setSummonHere(binding, $0) })).labelsHidden().toggleStyle(.switch).controlSize(.small).frame(width: 72).disabled(model.preparingAssignment || model.configBlocked)
+                            Menu { Button("编辑快捷键…") { editor = binding; showEditor = true }; Button("移除绑定", role: .destructive) { model.remove(binding) } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28).accessibilityLabel("\(binding.name)更多操作")
                         }.padding(.horizontal, 14).frame(minHeight: 64)
                         if binding.id != model.config.bindings.last?.id { Divider().padding(.horizontal, 14) }
                     }
                 }
             }.background(Color(nsColor: .controlBackgroundColor)).cornerRadius(10).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.10)))
-            Text(model.preparingAssignment ? "正在设置应用的桌面分配…" : "开启后，主窗口会来到当前普通桌面，切走时留在原处。开启时会尝试将 Dock 的“分配给”设为“无”。全屏窗口暂不支持。")
+            Text(model.preparingAssignment ? "正在设置应用的桌面分配…" : "开启“当前桌面”，窗口随叫随到；切走后留在原处。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
+                .help("仅支持普通桌面。开启时会将应用的 Dock 桌面分配设为“无”。")
 
-            group { HStack(spacing: 12) { icon("space", .orange, size: 28); VStack(alignment: .leading, spacing: 3) { Text("输入不受打扰").font(.system(size: 12, weight: .medium)); Text("短按输入空格。快速输入时不触发应用快捷键。").font(.system(size: 11)).foregroundStyle(.secondary) } } }.padding(.top, 10)
         }.font(.system(size: 13))
     }
     private var preferencesPage: some View {
         VStack(alignment: .leading, spacing: 16) {
             group { VStack(alignment: .leading, spacing: 12) { HStack { Text("长按空格的等待时间").fontWeight(.medium); Spacer(); Text("\(model.config.holdMilliseconds) ms").monospacedDigit().foregroundStyle(.secondary) }; Slider(value: Binding(get: { Double(model.config.holdMilliseconds) }, set: { model.setDelay($0) }), in: 150...600, step: 50); HStack { Text("更快唤起"); Spacer(); Text("更少误触") }.font(.caption).foregroundStyle(.secondary) } }
-            Text("按键按物理键位识别；非美式键盘请使用录入按钮。单独长按空格的重复输入会在松开时补发。").font(.system(size: 11)).foregroundStyle(.secondary)
-            group { Toggle("登录时启动 SpaceDock", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) })).toggleStyle(.switch).controlSize(.small) }
-            group { VStack(alignment: .leading, spacing: 10) { HStack { Text("辅助功能权限").fontWeight(.medium); Spacer(); Text(model.trusted ? "已授权" : "未授权").foregroundStyle(.secondary) }; Text(model.monitoring ? "键盘监听正常。" : "监听未启用；授权后点击重新检查。").font(.caption).foregroundStyle(.secondary); HStack { Button("打开系统设置") { model.openPermissionSettings() }; Button("重新检查") { model.refreshHealth() } }; if model.secureInput { Text("系统正在使用安全输入，快捷键暂时透传。").font(.caption).foregroundStyle(.orange) } } }
+            group { VStack(alignment: .leading, spacing: 12) {
+                HStack { Text("登录时启动 SpaceDock"); Spacer(); Toggle("登录时启动 SpaceDock", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) })).labelsHidden().toggleStyle(.switch).controlSize(.small) }
+                Divider()
+                HStack { Text("显示菜单栏图标"); Spacer(); Toggle("显示菜单栏图标", isOn: Binding(get: { model.config.menuBarIconVisible }, set: { model.setMenuBarIconVisible($0) }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(model.configBlocked) }
+                Text("隐藏后，可通过聚焦搜索打开 SpaceDock 设置。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } }
+            group { VStack(alignment: .leading, spacing: 10) { HStack { Text("辅助功能权限").fontWeight(.medium); Spacer(); Text(model.trusted ? "已授权" : "未授权").foregroundStyle(.secondary) }; if !model.monitoring { Text("监听未启用，请重新检查权限。").font(.caption).foregroundStyle(.secondary) }; HStack { Button("打开系统设置") { model.openPermissionSettings() }; Button("重新检查") { model.refreshHealth() } }; if model.secureInput { Text("系统正在使用安全输入，快捷键暂时透传。").font(.caption).foregroundStyle(.orange) } } }
             group { VStack(alignment: .leading, spacing: 12) { HStack { Text("在这些应用中暂停快捷键").fontWeight(.medium); Spacer(); Button("添加…") { if let url = selectApplication() { model.addExcluded(url) } } }; ForEach(model.config.excludedBundleIDs, id: \.self) { id in HStack { Text(NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { FileManager.default.displayName(atPath: $0.path) } ?? id).lineLimit(2); Spacer(); Button { model.removeExcluded(id) } label: { Image(systemName: "minus.circle") }.buttonStyle(.plain).accessibilityLabel("移除排除应用\(id)") } }; if model.config.excludedBundleIDs.isEmpty { Text("可添加游戏、远程桌面等应用。").font(.caption).foregroundStyle(.secondary) } } }
             Button("在访达中显示配置") { NSWorkspace.shared.selectFile(model.store.url.path, inFileViewerRootedAtPath: model.store.url.deletingLastPathComponent().path) }
         }.font(.system(size: 13))
