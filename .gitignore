@@ -1,0 +1,5 @@
+design/.preview-tools/
+__pycache__/
+.DS_Store
+.build/
+dist/
