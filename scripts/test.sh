@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+bash scripts/test-window-selection.sh
 SDK_PATH="${SPACEDOCK_SDK:-/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk}"
 if [ ! -d "$SDK_PATH" ]; then SDK_PATH="$(xcrun --show-sdk-path)"; fi
 if [[ "$(xcode-select -p)" != "/Library/Developer/CommandLineTools" ]]; then

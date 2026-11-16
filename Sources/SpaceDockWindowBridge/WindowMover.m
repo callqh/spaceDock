@@ -3,6 +3,7 @@
 #import <ApplicationServices/ApplicationServices.h>
 #include <dlfcn.h>
 #import "BridgedOperation.h"
+#import "WindowSelection.h"
 static int (*connection)(void);
 static uint64_t (*active)(int);
 static int (*spaceType)(int,uint64_t);
@@ -18,13 +19,9 @@ static BOOL available(void) {
 }
 static NSArray *windowSpaces(uint32_t wid){return CFBridgingRelease(spacesFor(connection(),7,(__bridge CFArrayRef)@[@(wid)]));}
 static uint32_t primaryWindow(int pid) {
+ if(!available())return 0;
  NSArray *windows=CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID));
- uint32_t selected=0;double largest=0;
- for(NSDictionary *w in windows){
-  if([w[(id)kCGWindowOwnerPID] intValue]!=pid || [w[(id)kCGWindowLayer] intValue]!=0)continue;
-  CGRect r;if(!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)w[(id)kCGWindowBounds],&r))continue;
-  double area=r.size.width*r.size.height;if(r.size.width>100 && r.size.height>100 && area>largest){selected=[w[(id)kCGWindowNumber] unsignedIntValue];largest=area;}
- }return selected;
+ return SDSelectPrimaryWindow(windows,pid,^NSArray *(uint32_t wid){return windowSpaces(wid);});
 }
 @implementation SDWindowMover
 + (BOOL)mainWindowIsVisibleForPID:(int)pid {
@@ -52,6 +49,7 @@ static uint32_t primaryWindow(int pid) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self attempt:pid target:target remaining:remaining-1 current:current completion:completion];});return;
  }
  NSArray *source=windowSpaces(wid);
+ if(source.count==0){completion(@"应用窗口的桌面归属暂不可用，请重试。");return;}
  if(source.count!=1){completion(@"请在 Dock 的应用选项中将“分配给”设为“无”，然后重试。");return;}
  if(spaceType(connection(),[source.firstObject unsignedLongLongValue])!=0){completion(@"暂不支持搬移全屏窗口，请先退出全屏。");return;}
  if([source containsObject:@(target)]){completion(nil);return;}
