@@ -166,28 +166,38 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
                 guard let app, failure == nil else { self.error = "无法打开\(binding.name)：\(failure?.localizedDescription ?? "未知错误")"; return }
-                let activate = { [weak self] in
+                let activate = { [weak self] (windowID: NSNumber?) in
                     guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
                     if let targetSpace {
                         guard !self.ledger.crossedSpace(ticket), SDWindowMover.currentSpace() == targetSpace,
-                              SDWindowMover.mainWindow(forPID: app.processIdentifier, isOnSpace: targetSpace.uint64Value) else { return }
+                              let windowID, SDWindowMover.window(windowID.uint32Value, isOnSpace: targetSpace.uint64Value) else { return }
                     }
-                    // Reopen like a Dock click, after any required move has been verified.
-                    // Activating a process alone does not restore a closed/minimized window.
-                    let show = NSWorkspace.OpenConfiguration(); show.activates = true
-                    NSWorkspace.shared.openApplication(at: url, configuration: show) { [weak self] reopened, failure in
-                        DispatchQueue.main.async {
-                            guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
-                            if let failure {
-                                self.error = "无法显示\(binding.name)：\(failure.localizedDescription)"
-                                return
+                    if let targetSpace, let windowID {
+                        if let failure = SDWindowMover.showWindow(windowID.uint32Value, forPID: app.processIdentifier, onSpace: targetSpace.uint64Value) {
+                            self.notice = failure
+                            return
+                        }
+                    } else {
+                        // Ordinary activation retains Dock-style reopen behavior.
+                        // Activating a process alone does not restore a closed/minimized window.
+                        let show = NSWorkspace.OpenConfiguration(); show.activates = true
+                        NSWorkspace.shared.openApplication(at: url, configuration: show) { [weak self] reopened, failure in
+                            DispatchQueue.main.async {
+                                guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
+                                if let failure {
+                                    self.error = "无法显示\(binding.name)：\(failure.localizedDescription)"
+                                    return
+                                }
+                                reopened?.unhide()
                             }
-                            reopened?.unhide()
                         }
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                         guard let self, self.ledger.isCurrent(ticket, for: id) else { return }
-                        if !app.isActive || !SDWindowMover.mainWindowIsVisible(forPID: app.processIdentifier) {
+                        let visible = windowID.map { SDWindowMover.windowIsVisible($0.uint32Value) } ?? SDWindowMover.mainWindowIsVisible(forPID: app.processIdentifier)
+                        if let targetSpace, SDWindowMover.currentSpace() != targetSpace {
+                            self.notice = "唤起后桌面发生变化，请重试。"
+                        } else if !app.isActive || !visible {
                             self.notice = "尚未确认\(binding.name)的窗口已显示，请再次按快捷键。"
                         }
                     }
@@ -197,16 +207,20 @@ final class AppModel: ObservableObject {
                     SDWindowMover.moveMainWindow(forPID: app.processIdentifier, toSpace: targetSpace.uint64Value, isCurrent: { [weak self] in
                         guard let self else { return false }
                         return self.effectiveEnabled && self.ledger.isCurrent(ticket, for: id) && !self.ledger.crossedSpace(ticket)
-                    }, completion: { [weak self] failure in
+                    }, completion: { [weak self] windowID, failure in
                         guard let self, self.ledger.isCurrent(ticket, for: id), !self.ledger.crossedSpace(ticket) else { return }
                         if let failure { self.notice = failure; return }
-                        activate()
+                        activate(windowID)
                     })
-                } else { activate() }
+                } else { activate(nil) }
             }
         }
         if let running = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
-            handleApplication(running, nil)
+            if targetSpace != nil && !SDWindowMover.hasMainWindow(forPID: running.processIdentifier) {
+                NSWorkspace.shared.openApplication(at: url, configuration: options, completionHandler: handleApplication)
+            } else {
+                handleApplication(running, nil)
+            }
         } else {
             NSWorkspace.shared.openApplication(at: url, configuration: options, completionHandler: handleApplication)
         }

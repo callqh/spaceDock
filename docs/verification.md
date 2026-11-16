@@ -99,3 +99,22 @@
 尚未替换正在运行的安装包，未进行修正版真实快捷键/跨桌面验收。不能将此问题归因为所有快捷键失败；按键时机、关闭后重新显示等其他路径尚无本轮失败证据。分支 fix/select-managed-app-window，未提交或推送。
 
 2026-11-16 发布准备：用户授权提交修复并发布，版本升至 1.1.1，标签工作流同时执行原生窗口筛选检查与 Swift 核心测试。此前“未提交或推送”描述的是诊断完成时状态；发布结果以 GitHub Actions 和 Release 为准。本轮不替换本机运行中的应用。
+
+### 2026-11-16 1.1.1 Lark 跳桌面根因（用户复现）
+
+用户确认当前桌面唤起仍跳桌面。只读窗口身份探针不读取标题、文本或截图：AX main/focused=193，193 的 subrole=AXStandardWindow；204 的 subrole=AXUnknown；1223 出现在 CGWindowList 中，但未出现在当时的 AXWindows 列表。三个窗口均可为 2304×1269；1223 与 193 分别有不同的 Space 归属。不能把 CG 绘图记录或有 Space 归属等同可交互主窗口，也不能从这些元数据推断 1223 的具体内部用途。
+
+用户在监测期间按 Space+D 并确认“已跳转”。同一被动追踪记录（NSDate reference seconds）：816489512.767 当前 Space=37，选择器 picked=1223、pickedSpaces=[5]，AX main=193、mainSpaces=[4]；816489513.640 pickedSpaces 变为 [37]，main 仍在 [4]；816489514.119 当前 Space 变为 4，picked 仍在 [37]，main/focused 仍为 193。因此已证实搬移的窗口不是实际主窗口，搬移成功后回到了主窗口原 Space。代码随后使用 NSWorkspace.openApplication(activates=true) 激活整个应用，与轨迹一致；未直接捕获系统内部激活事件，不能声称看到了该内部事件。
+
+根因：选择器以 CG 层级、面积和 Space 归属代替窗口语义；相同面积按枚举次序取第一个。1.1.1 只排除空 Space 窗口，不能排除仍有 Space 的非主窗口。后续主窗口校验与可见性判断也复用此错误选择器，形成自洽但错误的验证；应用级 reopen 不绑定已移动窗口。应从 AX 主窗口/标准窗口识别真实目标，以固定窗口身份贯穿选择、搬移、验证和唤起。此轮只定位与保存证据，未修改产品代码或安装包。只读探针保存在忽略的 dist/diagnostics 目录。
+
+
+### 2026-11-16 AX 主窗口与窗口级激活修复
+
+以真实 Lark 布局补充回归：同尺寸且有 Space 的 1223/204 不能胜过 AX 主窗口 193。旧选择器断言失败（退出 134）；改为 AX 候选身份后 9 项原生选择检查与 20 项核心测试通过。固定 completion 返回窗口 ID，搬移后不再重新猜目标，激活与可见性校验使用该 ID。
+
+第一轮仅改 AX 识别、仍采用 NSRunningApplication.activate 的真实测试失败：用户确认“跳转了”；检查器显示 FAIL target=37 current=4 window=193 visible=1，搬移读回目标为 37 但激活后回跳。第二轮以 _SLPSSetFrontProcessWithOptions(psn, wid, 0x200) 替代应用级激活，用户确认“现在在当前桌面打开了”；检查器显示 PASS target=37 current=37 window=193 visible=1。参考 AltTab 源码 https://github.com/lwouis/alt-tab-macos/blob/master/src/switcher/state/Window.swift 。这与旧 Chrome 普通模式焦点实验的目标不同：只对已经确认处于当前 Space 的真实窗口使用，不负责切到其他 Space。
+
+通过路径已接入正式快捷键；产品 Sources 中无临时日志，探针留在忽略的 dist/diagnostics，辅助进程测试结束后退出。版本准备为 1.1.2，本地构建通过。验证器成功不等于安装后的快捷键验收；冷启动、最小化、多显示器、微信关闭后恢复仍需明确验收，不能宣称已全部覆盖。
+
+2026-11-16 正式版本验收：1.1.2 已安装，用户完成辅助功能重新授权后，在没有 Lark 主窗口的桌面使用正式 Space+D 快捷键，明确确认“留在当前桌面了”，并授权提交代码。本次已验证正式快捷键的 Lark 当前桌面唤起；上述其他边界不据此视为通过。
