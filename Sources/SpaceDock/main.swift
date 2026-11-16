@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mainMenu = NSMenu()
         let appMenuItem = NSMenuItem(); mainMenu.addItem(appMenuItem)
         let appMenu = NSMenu(); appMenuItem.submenu = appMenu
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self; appMenu.addItem(settingsItem)
+        appMenu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 SpaceDock", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self; appMenu.addItem(quitItem)
         let fileMenuItem = NSMenuItem(); mainMenu.addItem(fileMenuItem)
@@ -54,7 +57,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.standardWindowButton(.closeButton)?.action = #selector(closeSettings)
             window.contentView = NSHostingView(rootView: SettingsView(model: model)); window.minSize = NSSize(width: 780, height: 590); window.center(); settings = window
         }
-        NSApp.activate(ignoringOtherApps: true); settings?.makeKeyAndOrderFront(nil)
+        guard let window = settings else { return }
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
     @objc func closeSettings() {
         guard settings?.attachedSheet == nil else { return }

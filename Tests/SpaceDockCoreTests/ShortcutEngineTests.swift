@@ -88,4 +88,22 @@ final class ConfigurationTests {
         let second = ledger.begin("wechat"); #expect(!(ledger.isCurrent(first, for: "wechat"))); #expect(!(ledger.crossedSpace(second)))
         ledger.invalidate(); #expect(!(ledger.isCurrent(second, for: "wechat")))
     }
+    @Test func latestApplicationRequestCancelsOtherApplications() {
+        var ledger = LaunchLedger()
+        let wechat = ledger.begin("wechat")
+        let lark = ledger.begin("lark")
+        #expect(!ledger.isCurrent(wechat, for: "wechat"))
+        #expect(ledger.isCurrent(lark, for: "lark"))
+        #expect(!ledger.isCurrent(lark, for: "wechat"))
+    }
+
+    @Test func explicitApplicationChangeCancelsPendingSummon() {
+        var ledger = LaunchLedger()
+        let request = ledger.begin("wechat")
+        ledger.applicationActivated("wechat")
+        #expect(ledger.isCurrent(request, for: "wechat"))
+        ledger.applicationActivated("finder")
+        #expect(!ledger.isCurrent(request, for: "wechat"))
+    }
+
 }

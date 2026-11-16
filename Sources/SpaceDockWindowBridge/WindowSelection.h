@@ -14,3 +14,11 @@ static uint32_t SDSelectPrimaryWindow(NSArray *windows, int pid, NSArray<NSNumbe
  }
  return 0;
 }
+
+// Without main/focused semantics, a single standard window is unambiguous.
+// Multiple standard windows with no focus must not be chosen by enumeration order.
+static NSArray<NSNumber *> *SDUnambiguousCandidates(NSArray<NSNumber *> *standard, NSArray<NSNumber *> *preferred) {
+ NSMutableArray *matches=[NSMutableArray array];
+ for(NSNumber *wid in preferred)if([standard containsObject:wid] && ![matches containsObject:wid])[matches addObject:wid];
+ return matches.count ? matches : (standard.count==1 ? standard : @[]);
+}

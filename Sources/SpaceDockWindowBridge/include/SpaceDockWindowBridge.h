@@ -1,15 +1,17 @@
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
+typedef NS_ENUM(NSInteger, SDWindowSummonResult) {
+    SDWindowSummonResultConfirmed,
+    SDWindowSummonResultWindowUnavailable,
+    SDWindowSummonResultFailed
+};
 @interface SDWindowMover : NSObject
 + (nullable NSNumber *)currentSpace;
-+ (BOOL)mainWindowForPID:(int)pid isOnSpace:(uint64_t)space;
-+ (BOOL)mainWindowIsVisibleForPID:(int)pid;
-+ (BOOL)hasMainWindowForPID:(int)pid;
-+ (BOOL)window:(uint32_t)wid isOnSpace:(uint64_t)space;
-+ (BOOL)windowIsVisible:(uint32_t)wid;
-+ (nullable NSString *)showWindow:(uint32_t)wid forPID:(int)pid onSpace:(uint64_t)space;
-+ (void)moveMainWindowForPID:(int)pid toSpace:(uint64_t)space
-                  isCurrent:(BOOL (^)(void))isCurrent
-                 completion:(void (^)(NSNumber * _Nullable windowID, NSString * _Nullable error))completion;
++ (void)checkFocusedWindowForPID:(int)pid completion:(void (^)(BOOL visible))completion;
+// Callbacks run on the main queue; foreign AX queries run on a serial worker.
+// Existing standard windows only. No reopen, persistent cache or app-level activation.
++ (void)summonWindowForPID:(int)pid onSpace:(uint64_t)space
+                isCurrent:(BOOL (^)(void))isCurrent
+               completion:(void (^)(SDWindowSummonResult result, NSString * _Nullable error))completion;
 @end
 NS_ASSUME_NONNULL_END

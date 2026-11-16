@@ -60,9 +60,12 @@ public struct LaunchLedger {
     private var latest: [String: Ticket] = [:]
     public init() {}
     public mutating func begin(_ bundle: String) -> Ticket {
-        sequence += 1; let ticket = Ticket(sequence: sequence, generation: generation); latest[bundle] = ticket; return ticket
+        sequence += 1; let ticket = Ticket(sequence: sequence, generation: generation); latest = [bundle: ticket]; return ticket
     }
     public func isCurrent(_ ticket: Ticket, for bundle: String) -> Bool { latest[bundle] == ticket }
+    public mutating func applicationActivated(_ bundle: String?) {
+        if latest[bundle ?? ""] == nil { invalidate() }
+    }
     public func crossedSpace(_ ticket: Ticket) -> Bool { ticket.generation != generation }
     public mutating func spaceChanged() { generation += 1 }
     public mutating func invalidate() { latest.removeAll(); generation += 1 }

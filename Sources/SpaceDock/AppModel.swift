@@ -14,7 +14,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var secureInput = false
     @Published var error: String?
     @Published var notice: String?
-    @Published var recording = false { didSet { keyboard.contextChanged(); updateKeyboard() } }
+    @Published var recording = false { didSet { if recording { ledger.invalidate() }; keyboard.contextChanged(); updateKeyboard() } }
     @Published private(set) var loginEnabled = false
     @Published private(set) var configBlocked = false
     private let keyboard = KeyboardMonitor()
@@ -54,8 +54,10 @@ final class AppModel: ObservableObject {
         observers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             guard let self else { return }
             self.frontBundle = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            self.ledger.applicationActivated(self.frontBundle)
             if let id = self.frontBundle { self.requestedHides.removeValue(forKey: id) }
             self.keyboard.contextChanged(); self.updateKeyboard()
+
         })
         observers.append(center.addObserver(forName: NSWorkspace.didHideApplicationNotification, object: nil, queue: .main) { [weak self] n in
             if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, let id = app.bundleIdentifier, app.isHidden {
@@ -150,80 +152,46 @@ final class AppModel: ObservableObject {
         let id = binding.bundleIdentifier
         requestedHides.removeValue(forKey: id)
         let ticket = ledger.begin(id)
-        let targetSpace = binding.summonHere == true ? SDWindowMover.currentSpace() : nil
-        if binding.summonHere == true && targetSpace == nil {
-            notice = "当前桌面不支持窗口搬移；请在普通桌面重试。"; return
-        }
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first, app.isActive, SDWindowMover.mainWindowIsVisible(forPID: app.processIdentifier), targetSpace == nil || SDWindowMover.mainWindow(forPID: app.processIdentifier, isOnSpace: targetSpace!.uint64Value) {
-            requestHide(app)
-            return
-        }
+        notice = nil
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) ?? URL(fileURLWithPath: binding.path)
         guard FileManager.default.fileExists(atPath: url.path) else { error = "找不到\(binding.name)，请重新选择应用。"; return }
-        // Launch without activation first, so a stale completion cannot steal focus.
-        let options = NSWorkspace.OpenConfiguration(); options.activates = false
-        let handleApplication: (NSRunningApplication?, Error?) -> Void = { [weak self] app, failure in
-            DispatchQueue.main.async {
-                guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
-                guard let app, failure == nil else { self.error = "无法打开\(binding.name)：\(failure?.localizedDescription ?? "未知错误")"; return }
-                let activate = { [weak self] (windowID: NSNumber?) in
+        // Ordinary mode deliberately keeps the system's Dock/reopen behavior.
+        let openNormally = { [weak self] in
+            guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
+            let options = NSWorkspace.OpenConfiguration(); options.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: options) { [weak self] app, failure in
+                DispatchQueue.main.async {
                     guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
-                    if let targetSpace {
-                        guard !self.ledger.crossedSpace(ticket), SDWindowMover.currentSpace() == targetSpace,
-                              let windowID, SDWindowMover.window(windowID.uint32Value, isOnSpace: targetSpace.uint64Value) else { return }
-                    }
-                    if let targetSpace, let windowID {
-                        if let failure = SDWindowMover.showWindow(windowID.uint32Value, forPID: app.processIdentifier, onSpace: targetSpace.uint64Value) {
-                            self.notice = failure
-                            return
-                        }
-                    } else {
-                        // Ordinary activation retains Dock-style reopen behavior.
-                        // Activating a process alone does not restore a closed/minimized window.
-                        let show = NSWorkspace.OpenConfiguration(); show.activates = true
-                        NSWorkspace.shared.openApplication(at: url, configuration: show) { [weak self] reopened, failure in
-                            DispatchQueue.main.async {
-                                guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
-                                if let failure {
-                                    self.error = "无法显示\(binding.name)：\(failure.localizedDescription)"
-                                    return
-                                }
-                                reopened?.unhide()
-                            }
-                        }
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                        guard let self, self.ledger.isCurrent(ticket, for: id) else { return }
-                        let visible = windowID.map { SDWindowMover.windowIsVisible($0.uint32Value) } ?? SDWindowMover.mainWindowIsVisible(forPID: app.processIdentifier)
-                        if let targetSpace, SDWindowMover.currentSpace() != targetSpace {
-                            self.notice = "唤起后桌面发生变化，请重试。"
-                        } else if !app.isActive || !visible {
-                            self.notice = "尚未确认\(binding.name)的窗口已显示，请再次按快捷键。"
-                        }
-                    }
+                    if let failure { self.error = "无法打开\(binding.name)：\(failure.localizedDescription)"; return }
+                    app?.unhide()
                 }
-                if let targetSpace {
-                    guard !self.ledger.crossedSpace(ticket), SDWindowMover.currentSpace() == targetSpace else { return }
-                    SDWindowMover.moveMainWindow(forPID: app.processIdentifier, toSpace: targetSpace.uint64Value, isCurrent: { [weak self] in
-                        guard let self else { return false }
-                        return self.effectiveEnabled && self.ledger.isCurrent(ticket, for: id) && !self.ledger.crossedSpace(ticket)
-                    }, completion: { [weak self] windowID, failure in
-                        guard let self, self.ledger.isCurrent(ticket, for: id), !self.ledger.crossedSpace(ticket) else { return }
-                        if let failure { self.notice = failure; return }
-                        activate(windowID)
-                    })
-                } else { activate(nil) }
             }
         }
-        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
-            if targetSpace != nil && !SDWindowMover.hasMainWindow(forPID: running.processIdentifier) {
-                NSWorkspace.shared.openApplication(at: url, configuration: options, completionHandler: handleApplication)
-            } else {
-                handleApplication(running, nil)
+        if binding.summonHere == true {
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else {
+                openNormally(); return
             }
-        } else {
-            NSWorkspace.shared.openApplication(at: url, configuration: options, completionHandler: handleApplication)
+            guard let targetSpace = SDWindowMover.currentSpace() else {
+                notice = "当前桌面不支持窗口搬移；请在普通桌面重试。"; return
+            }
+            SDWindowMover.summonWindow(forPID: app.processIdentifier, onSpace: targetSpace.uint64Value, isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.effectiveEnabled && self.ledger.isCurrent(ticket, for: id) && !self.ledger.crossedSpace(ticket)
+            }, completion: { [weak self] result, failure in
+                guard let self, self.ledger.isCurrent(ticket, for: id), !self.ledger.crossedSpace(ticket) else { return }
+                if result == .windowUnavailable {
+                    self.notice = "未找到可操作窗口，已改用普通打开，可能切换桌面。"
+                    openNormally()
+                } else { self.notice = failure }
+            })
+            return
         }
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first, app.isActive {
+            SDWindowMover.checkFocusedWindow(forPID: app.processIdentifier) { [weak self] visible in
+                guard let self, self.ledger.isCurrent(ticket, for: id), self.effectiveEnabled else { return }
+                if visible && app.isActive { self.requestHide(app) } else { openNormally() }
+            }
+        } else { openNormally() }
     }
 
     private func spaceChanged() {

@@ -16,5 +16,8 @@ int main(void) { @autoreleasepool {
  NSCAssert(SDSelectPrimaryWindow(lark,1,@[@193],^NSArray *(uint32_t wid){return @[@5];})==193,@"Regression: a managed drawing window must not beat the real main window");
  NSCAssert(SDSelectPrimaryWindow(lark,1,@[],^NSArray *(uint32_t wid){return @[@5];})==0,@"Missing AX data must not fall back to a drawing window");
  NSCAssert(SDSelectPrimaryWindow(@[window(10,1,0,300,300),window(11,1,0,2000,1500)],1,@[@10,@11],^NSArray *(uint32_t wid){return @[@5];})==10,@"AX main takes priority over a larger standard window");
- puts("9 window-selection regression checks passed");
+ NSCAssert(SDUnambiguousCandidates(@[@193,@1223],@[]).count==0,@"Two standard windows without main/focus are ambiguous");
+ NSCAssert([SDUnambiguousCandidates(@[@193],@[]) isEqual:@[@193]],@"A unique standard window is a safe fallback");
+ NSCAssert([SDUnambiguousCandidates(@[@193,@204],@[@1223,@193]) isEqual:@[@193]],@"Preferred IDs must still be standard windows");
+ puts("12 window-selection regression checks passed");
 } return 0; }

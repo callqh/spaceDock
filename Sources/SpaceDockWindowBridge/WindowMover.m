@@ -32,119 +32,198 @@ static uint32_t axWindowID(id element) {
  if(getWindow)getWindow((__bridge AXUIElementRef)element,&wid);
  return wid;
 }
-static NSArray *standardWindows(int pid) {
- AXUIElementRef app=AXUIElementCreateApplication(pid);
- AXUIElementSetMessagingTimeout(app,0.25);
- NSMutableArray *ordered=[NSMutableArray array];
- id main=axValue(app,kAXMainWindowAttribute), focused=axValue(app,kAXFocusedWindowAttribute);
- if(main)[ordered addObject:main];
- if(focused)[ordered addObject:focused];
- id windows=axValue(app,kAXWindowsAttribute);
- if([windows isKindOfClass:NSArray.class])[ordered addObjectsFromArray:windows];
- CFRelease(app);
- NSMutableArray *result=[NSMutableArray array];
- for(id element in ordered) {
-  if(CFGetTypeID((__bridge CFTypeRef)element)!=AXUIElementGetTypeID())continue;
-  AXUIElementRef ax=(__bridge AXUIElementRef)element;
-  AXUIElementSetMessagingTimeout(ax,0.25);
-  if([axValue(ax,kAXSubroleAttribute) isEqual:(__bridge NSString *)kAXStandardWindowSubrole] &&
-     ![result containsObject:element])[result addObject:element];
- }
- return result;
+
+// Request-local identity: never reuse an AX reference or window ID in a later request.
+@interface SDWindowTarget : NSObject
+@property(nonatomic) int pid;
+@property(nonatomic) uint32_t wid;
+@property(nonatomic,strong) NSRunningApplication *application;
+@property(nonatomic,strong) id element;
+@end
+@implementation SDWindowTarget
+@end
+
+static NSArray *drawingWindows(void) {
+ return CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID));
 }
-static uint32_t primaryWindow(int pid) {
- if(!available())return 0;
- NSMutableArray *ids=[NSMutableArray array];
- for(id element in standardWindows(pid)) {uint32_t wid=axWindowID(element);if(wid)[ids addObject:@(wid)];}
- NSArray *windows=CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionAll,kCGNullWindowID));
- return SDSelectPrimaryWindow(windows,pid,ids,^NSArray *(uint32_t wid){return windowSpaces(wid);});
+static BOOL validTarget(SDWindowTarget *target) {
+ if(target.application.terminated || target.application.processIdentifier!=target.pid ||
+    axWindowID(target.element)!=target.wid)return NO;
+ AXUIElementRef ax=(__bridge AXUIElementRef)target.element;
+ if(![axValue(ax,kAXSubroleAttribute) isEqual:(__bridge NSString *)kAXStandardWindowSubrole])return NO;
+ return SDSelectPrimaryWindow(drawingWindows(),target.pid,@[@(target.wid)],^NSArray *(uint32_t wid){return windowSpaces(wid);})==target.wid;
 }
-@implementation SDWindowMover
-+ (BOOL)mainWindowIsVisibleForPID:(int)pid {
- return [self windowIsVisible:primaryWindow(pid)];
+static BOOL onSpace(uint32_t wid,uint64_t space) {
+ NSArray *spaces=windowSpaces(wid);
+ return spaces.count==1 && [spaces containsObject:@(space)];
 }
-+ (BOOL)hasMainWindowForPID:(int)pid {return primaryWindow(pid)!=0;}
-+ (BOOL)windowIsVisible:(uint32_t)wid {
- if(!wid)return NO;
- NSArray *windows=CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly,kCGNullWindowID));
- for(NSDictionary *w in windows) {
-  if([w[(id)kCGWindowNumber] unsignedIntValue]==wid && [w[(id)kCGWindowAlpha] doubleValue]>0)return YES;
- }
+static BOOL visible(uint32_t wid) {
+ for(NSDictionary *w in drawingWindows())
+  if([w[(id)kCGWindowNumber] unsignedIntValue]==wid)
+   return [w[(id)kCGWindowIsOnscreen] boolValue] && [w[(id)kCGWindowAlpha] doubleValue]>0;
  return NO;
 }
-+ (NSNumber*)currentSpace {if(!available())return nil;uint64_t space=active(connection());return space && spaceType(connection(),space)==0?@(space):nil;}
-+ (BOOL)mainWindowForPID:(int)pid isOnSpace:(uint64_t)space {
- if(!available())return NO;uint32_t wid=primaryWindow(pid);if(!wid)return NO;
- return [self window:wid isOnSpace:space];
+static BOOL focused(SDWindowTarget *target) {
+ AXUIElementRef app=AXUIElementCreateApplication(target.pid);
+ AXUIElementSetMessagingTimeout(app,0.2);
+ uint32_t wid=axWindowID(axValue(app,kAXFocusedWindowAttribute));
+ CFRelease(app);
+ return wid==target.wid && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier==target.pid;
 }
-+ (BOOL)window:(uint32_t)wid isOnSpace:(uint64_t)space {
- if(!wid || !available())return NO;
- NSArray *list=windowSpaces(wid);return list.count==1 && [list containsObject:@(space)];
+static SDWindowTarget *resolveTarget(int pid,NSString **failure,BOOL (^current)(void)) {
+ NSRunningApplication *running=[NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+ if(!running || running.terminated){*failure=@"应用已退出，请先正常打开主窗口。";return nil;}
+ AXUIElementRef app=AXUIElementCreateApplication(pid);
+ AXUIElementSetMessagingTimeout(app,0.2);
+ NSMutableArray *ordered=[NSMutableArray array];
+ NSMutableArray *preferred=[NSMutableArray array];
+ NSTimeInterval deadline=NSProcessInfo.processInfo.systemUptime+1.5;
+ AXError readError=kAXErrorSuccess;
+ for(NSString *key in @[(__bridge NSString *)kAXMainWindowAttribute,(__bridge NSString *)kAXFocusedWindowAttribute,(__bridge NSString *)kAXWindowsAttribute]) {
+  if(!current()){CFRelease(app);*failure=@"请求已取消。";return nil;}
+  CFTypeRef raw=NULL;
+  AXError result=AXUIElementCopyAttributeValue(app,(__bridge CFStringRef)key,&raw);
+  id value=CFBridgingRelease(raw);
+  if(result!=kAXErrorSuccess){readError=result;continue;}
+  if([value isKindOfClass:NSArray.class])[ordered addObjectsFromArray:value];
+  else if(value){[ordered addObject:value];uint32_t wid=axWindowID(value);if(wid)[preferred addObject:@(wid)];}
+ }
+ CFRelease(app);
+ NSMutableArray *candidates=[NSMutableArray array];
+ NSMutableDictionary *elements=[NSMutableDictionary dictionary];
+ for(id element in ordered) {
+  if(!current() || NSProcessInfo.processInfo.systemUptime>deadline){*failure=@"窗口查询已取消或超时，请稍后重试。";return nil;}
+  if(CFGetTypeID((__bridge CFTypeRef)element)!=AXUIElementGetTypeID())continue;
+  AXUIElementRef ax=(__bridge AXUIElementRef)element;
+  AXUIElementSetMessagingTimeout(ax,0.2);
+  if(![axValue(ax,kAXSubroleAttribute) isEqual:(__bridge NSString *)kAXStandardWindowSubrole])continue;
+  uint32_t wid=axWindowID(element);
+  if(wid && !elements[@(wid)]){[candidates addObject:@(wid)];elements[@(wid)]=element;}
+ }
+ uint32_t wid=SDSelectPrimaryWindow(drawingWindows(),pid,SDUnambiguousCandidates(candidates,preferred),^NSArray *(uint32_t wid){return windowSpaces(wid);});
+ if(!wid) {
+  if(!AXIsProcessTrusted() || readError==kAXErrorAPIDisabled)*failure=@"辅助功能权限不可用，请在设置中检查授权。";
+  else if(readError==kAXErrorCannotComplete)*failure=@"应用暂未响应窗口查询，请稍后重试。";
+  else *failure=@"未找到可可靠操作的主窗口。请正常打开主窗口后重试；不会自动切换桌面。";
+  return nil;
+ }
+ SDWindowTarget *target=[SDWindowTarget new];target.pid=pid;target.wid=wid;target.element=elements[@(wid)];target.application=running;
+ return target;
 }
-// Never send an application reopen event for a window already selected and moved.
-+ (NSString *)showWindow:(uint32_t)wid forPID:(int)pid onSpace:(uint64_t)space {
- if(!available() || active(connection())!=space || ![self window:wid isOnSpace:space])
-  return @"目标窗口或桌面已变化，未激活应用。";
- id selected=nil;
- for(id element in standardWindows(pid))if(axWindowID(element)==wid){selected=element;break;}
- if(!selected)return @"目标窗口已关闭或不可访问，请重试。";
- AXUIElementRef ax=(__bridge AXUIElementRef)selected;
+
+static dispatch_queue_t windowQueue(void) {
+ static dispatch_queue_t worker;static dispatch_once_t once;
+ dispatch_once(&once,^{worker=dispatch_queue_create("local.spacedock.window-request",DISPATCH_QUEUE_SERIAL);});
+ return worker;
+}
+
+@implementation SDWindowMover
++ (void)checkFocusedWindowForPID:(int)pid completion:(void (^)(BOOL))completion {
+ dispatch_async(windowQueue(),^{@autoreleasepool {
+  NSString *failure=nil;
+  SDWindowTarget *target=available()?resolveTarget(pid,&failure,^BOOL{return YES;}):nil;
+  BOOL result=target && validTarget(target) && visible(target.wid) && focused(target) && !target.application.hidden;
+  dispatch_async(dispatch_get_main_queue(),^{completion(result);});
+ }});
+}
++ (NSNumber*)currentSpace {
+ if(!available())return nil;
+ uint64_t space=active(connection());return space && spaceType(connection(),space)==0?@(space):nil;
+}
++ (void)summonWindowForPID:(int)pid onSpace:(uint64_t)space isCurrent:(BOOL (^)(void))isCurrent completion:(void (^)(SDWindowSummonResult,NSString *))completion {
+ dispatch_async(windowQueue(),^{@autoreleasepool {
+  // The model belongs to the main queue. Never call it directly from AX work.
+  BOOL (^current)(void)=^BOOL{
+   __block BOOL value=NO;dispatch_sync(dispatch_get_main_queue(),^{value=isCurrent();});
+   return value && available() && active(connection())==space;
+  };
+  BOOL missingWindow=NO;
+  NSString *failure=[self runSummon:pid space:space current:current missingWindow:&missingWindow];
+  SDWindowSummonResult result=missingWindow?SDWindowSummonResultWindowUnavailable:(failure?SDWindowSummonResultFailed:SDWindowSummonResultConfirmed);
+  dispatch_async(dispatch_get_main_queue(),^{if(isCurrent())completion(result,failure);});
+ }});
+}
++ (NSString *)runSummon:(int)pid space:(uint64_t)space current:(BOOL (^)(void))current missingWindow:(BOOL *)missingWindow {
+ if(!current())return @"请求已取消。";
+ NSString *failure=nil;
+ SDWindowTarget *target=resolveTarget(pid,&failure,current);
+ if(!target) {
+  // Only pre-move discovery can request ordinary opening. Cancellation,
+  // permission loss and failures after a move must not trigger this fallback.
+  *missingWindow=current() && AXIsProcessTrusted();
+  return failure;
+ }
+ if(!current())return @"请求已取消。";
+ NSArray *source=windowSpaces(target.wid);
+ if(source.count!=1)return @"请在 Dock 的应用选项中将“分配给”设为“无”。";
+ if(spaceType(connection(),[source.firstObject unsignedLongLongValue])!=0)
+  return @"暂不支持搬移全屏窗口，请先退出全屏。";
+ AXUIElementRef ax=(__bridge AXUIElementRef)target.element;
+ if(!validTarget(target))return @"窗口已变化，未执行唤起，请重试。";
+ // Toggle only the exact focused, visible window already on the target desktop.
+ if(onSpace(target.wid,space) && focused(target) && visible(target.wid) && !target.application.hidden) {
+  if(!current())return @"请求已取消。";
+  [target.application hide];
+  return [self waitFor:^{return target.application.hidden;} current:current] ? nil : @"尚未确认应用已隐藏。";
+ }
+ // Move while still hidden/minimized, then restore the same window on the target.
+ if(!onSpace(target.wid,space)) {
+  Class cls=NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
+  if(![cls instancesRespondToSelector:@selector(initWithWindows:spaceID:)])return @"系统窗口搬移接口不可用。";
+  if(!validTarget(target) || !current())return @"目标窗口或桌面已变化。";
+  id operation=[[cls alloc]initWithWindows:@[@(target.wid)] spaceID:space];
+  if(!operation)return @"无法创建窗口搬移请求。";
+  submitMove((__bridge void*)operation);
+  BOOL moved=[self waitFor:^{return onSpace(target.wid,space);} current:current];
+  // Keep the asynchronous operation alive through its readback.
+  (void)[operation class];
+  if(!moved)return @"窗口未能移到当前桌面，未激活应用。";
+ }
+ if(!validTarget(target) || !onSpace(target.wid,space) || !current())return @"目标窗口或桌面已变化。";
  id minimized=axValue(ax,kAXMinimizedAttribute);
- if([minimized boolValue] && AXUIElementSetAttributeValue(ax,kAXMinimizedAttribute,kCFBooleanFalse)!=kAXErrorSuccess)
-  return @"无法恢复最小化窗口。";
- // Select the exact main window before process activation can consult its old main window.
+ if(![minimized isKindOfClass:NSNumber.class])return @"暂时无法确认窗口状态，未激活应用。";
+ if([minimized boolValue]) {
+  if(!current())return @"请求已取消。";
+  if(AXUIElementSetAttributeValue(ax,kAXMinimizedAttribute,kCFBooleanFalse)!=kAXErrorSuccess)return @"无法恢复最小化窗口。";
+ }
+ if(!validTarget(target) || !onSpace(target.wid,space) || !current())return @"恢复时窗口或桌面发生变化。";
  if(AXUIElementSetAttributeValue(ax,kAXMainAttribute,kCFBooleanTrue)!=kAXErrorSuccess)
-  return @"无法将目标窗口设为主窗口，未激活应用。";
- if(active(connection())!=space || ![self window:wid isOnSpace:space])
-  return @"恢复窗口时桌面发生变化，请重试。";
- NSRunningApplication *app=[NSRunningApplication runningApplicationWithProcessIdentifier:pid];
- [app unhide];
- // An application-level activation may select another managed drawing window
- // and switch Spaces even after its AX main window has moved. Target the exact
- // verified window, as AltTab's window-focus implementation does.
+  return @"无法选定主窗口，未执行应用级切换。";
+ if(!current())return @"请求已取消。";
+ [target.application unhide];
  typedef OSStatus (*FocusWindow)(ProcessSerialNumber*,uint32_t,uint32_t);
- static FocusWindow focus; static dispatch_once_t once;
+ static FocusWindow focus;static dispatch_once_t once;
  dispatch_once(&once,^{focus=dlsym(RTLD_DEFAULT,"_SLPSSetFrontProcessWithOptions");});
  ProcessSerialNumber psn;
- if(!focus || GetProcessForPID(pid,&psn)!=noErr)
-  return @"系统窗口级激活接口不可用，未执行应用级切换。";
- if(active(connection())!=space || ![self window:wid isOnSpace:space])
-  return @"目标桌面发生变化，未激活窗口。";
- if(focus(&psn,wid,0x200)!=noErr)
-  return @"无法激活目标窗口，请重试。";
- AXUIElementPerformAction(ax,kAXRaiseAction);
+ if(!focus || GetProcessForPID(pid,&psn)!=noErr)return @"系统窗口级激活接口不可用。";
+ if(!validTarget(target) || !onSpace(target.wid,space) || !current())return @"目标窗口或桌面已变化，未激活窗口。";
+ if(focus(&psn,target.wid,0x200)!=noErr)return @"无法激活目标窗口。";
+ if(!current())return @"请求已取消。";
+ AXError raised=AXUIElementPerformAction(ax,kAXRaiseAction);
+ if(raised!=kAXErrorSuccess)return @"无法显示目标窗口，请重试。";
+ // Focus is advisory; the readback below, not this return code, decides success.
+ if(!current())return @"请求已取消。";
  AXUIElementSetAttributeValue(ax,kAXFocusedAttribute,kCFBooleanTrue);
- return nil;
+ BOOL confirmed=[self waitFor:^BOOL{
+  id minimizedNow=axValue(ax,kAXMinimizedAttribute);
+  return validTarget(target) && onSpace(target.wid,space) && !target.application.hidden &&
+   [minimizedNow isKindOfClass:NSNumber.class] && ![minimizedNow boolValue] && visible(target.wid) && focused(target);
+ } current:current];
+ return confirmed?nil:@"尚未确认目标窗口已显示并获得焦点；未执行普通打开回退。";
 }
-+ (void)moveMainWindowForPID:(int)pid toSpace:(uint64_t)space isCurrent:(BOOL (^)(void))isCurrent completion:(void (^)(NSNumber*,NSString*))completion {
- [self attempt:pid target:space remaining:30 current:isCurrent completion:completion];
-}
-+ (void)attempt:(int)pid target:(uint64_t)target remaining:(int)remaining current:(BOOL (^)(void))current completion:(void (^)(NSNumber*,NSString*))completion {
- if(!current()){completion(nil,@"请求已取消");return;}
- if(!available() || active(connection())!=target || spaceType(connection(),target)!=0){completion(nil,@"当前桌面已变化或不支持搬移，未唤起应用。");return;}
- uint32_t wid=primaryWindow(pid);
- if(!wid){
-  if(remaining<=0){completion(nil,@"暂未找到应用主窗口，请待应用启动完成后重试。");return;}
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,100*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self attempt:pid target:target remaining:remaining-1 current:current completion:completion];});return;
- }
- NSArray *source=windowSpaces(wid);
- if(source.count==0){completion(nil,@"应用窗口的桌面归属暂不可用，请重试。");return;}
- if(source.count!=1){completion(nil,@"请在 Dock 的应用选项中将“分配给”设为“无”，然后重试。");return;}
- if(spaceType(connection(),[source.firstObject unsignedLongLongValue])!=0){completion(nil,@"暂不支持搬移全屏窗口，请先退出全屏。");return;}
- if([source containsObject:@(target)]){completion(@(wid),nil);return;}
- Class cls=NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
- if(![cls instancesRespondToSelector:@selector(initWithWindows:spaceID:)]){completion(nil,@"系统窗口搬移接口不可用。");return;}
- id operation=[[cls alloc]initWithWindows:@[@(wid)] spaceID:target];
- if(!operation){completion(nil,@"无法创建窗口搬移请求。");return;}
- submitMove((__bridge void*)operation);
- [self verify:wid target:target operation:operation remaining:40 current:current completion:completion];
-}
-+ (void)verify:(uint32_t)wid target:(uint64_t)target operation:(id)operation remaining:(int)remaining current:(BOOL (^)(void))current completion:(void (^)(NSNumber*,NSString*))completion {
- if(!current()){completion(nil,@"请求已取消");return;}
- if(active(connection())!=target){completion(nil,@"当前桌面已变化，未激活应用。");return;}
- NSArray *after=windowSpaces(wid);
- if(after.count==1 && [after containsObject:@(target)]){completion(@(wid),nil);return;}
- if(remaining<=0){completion(nil,@"窗口未能移到当前桌面，未激活应用以避免跳转。");return;}
- dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),dispatch_get_main_queue(),^{[self verify:wid target:target operation:operation remaining:remaining-1 current:current completion:completion];});
+// Bounded readback only: never repeats move, reopen, activation or Raise.
++ (BOOL)waitFor:(BOOL (^)(void))condition current:(BOOL (^)(void))current {
+ NSTimeInterval deadline=NSProcessInfo.processInfo.systemUptime+1.5;
+ NSTimeInterval stableSince=0;
+ do {
+  if(!current())return NO;
+  if(condition()) {
+   NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+   if(!stableSince)stableSince=now;
+   if(now-stableSince>=0.15)return current();
+  } else stableSince=0;
+  [NSThread sleepForTimeInterval:0.05];
+ }while(NSProcessInfo.processInfo.systemUptime<deadline);
+ return NO;
 }
 @end
